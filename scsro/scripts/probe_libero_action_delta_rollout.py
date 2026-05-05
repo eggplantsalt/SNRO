@@ -1,16 +1,26 @@
 """
 Probe clean vs perturbed action rollouts from a restored mid-timestep LIBERO state.
 
+This script compares two rollouts from the same restored HDF5 simulator state:
+
+1. Clean rollout:
+   actions[t], actions[t+1], ...
+
+2. Perturbed rollout:
+   actions[t] + delta, actions[t+1] + delta, ...
+   for the first `perturb_steps` steps, then clean demo continuation.
+
 Example:
     python scsro/scripts/probe_libero_action_delta_rollout.py \
       --libero_task_suite libero_spatial \
       --libero_hdf5_dir /storage/v-xiangxizheng/zy_workspace/SNRO/datasets/libero_hdf5_no_noops/libero_spatial_no_noops \
       --task_id 0 \
       --demo_id 0 \
-      --timestep 30 \
+      --timestep 70 \
       --horizon 20 \
-      --delta "0.02,0,0,0,0,0,0" \
-      --output_dir ./scsro/debug_delta_rollout/spatial_t0_d0_t30_dx002
+      --perturb_steps 8 \
+      --delta "0.05,0,0,0,0,0,0" \
+      --output_dir ./scsro/debug_delta_rollout/spatial_t0_d0_t70_dx005_k8
 """
 
 import argparse
@@ -71,6 +81,20 @@ def parse_delta(delta_str: str) -> np.ndarray:
     return np.array(values, dtype=np.float32)
 
 
+def to_list_or_none(x) -> Optional[List[float]]:
+    if x is None:
+        return None
+    return np.array(x, dtype=np.float32).tolist()
+
+
+def get_sim_state_flat(env) -> Optional[np.ndarray]:
+    """Return flattened MuJoCo simulator state if available."""
+    try:
+        return np.array(env.sim.get_state().flatten(), dtype=np.float32)
+    except Exception:
+        return None
+
+
 def restore_env(env, state_t: np.ndarray) -> Tuple[Optional[dict], bool, bool, List[str]]:
     errors: List[str] = []
 
@@ -96,26 +120,60 @@ def restore_env(env, state_t: np.ndarray) -> Tuple[Optional[dict], bool, bool, L
         return None, False, True, errors
 
 
+def apply_delta_to_action(
+    base_action: np.ndarray,
+    actual_delta: np.ndarray,
+    clip_action: bool,
+) -> np.ndarray:
+    """Apply delta to a copied base action.
+
+    Note:
+        This script operates in the raw HDF5 / LIBERO action space.
+        Do not do OpenVLA gripper normalize / invert here.
+    """
+    action = base_action.copy() + actual_delta
+
+    if clip_action:
+        # Keep gripper unchanged unless the user explicitly included gripper delta
+        # and zero_gripper_delta=False upstream.
+        action[:6] = np.clip(action[:6], -1.0, 1.0)
+
+    return action
+
+
 def rollout_from_state(
     env,
     state_t: np.ndarray,
     actions: np.ndarray,
     timestep: int,
     horizon: int,
-    first_action_override: Optional[np.ndarray] = None,
+    actual_delta: Optional[np.ndarray] = None,
+    perturb_steps: int = 0,
+    clip_action: bool = False,
 ) -> Dict[str, Any]:
+    """Roll out from a restored state.
+
+    If actual_delta is provided, it is applied to the first `perturb_steps`
+    actions. Otherwise, this is a clean demo-continuation rollout.
+    """
     result: Dict[str, Any] = {
         "restore_success": False,
         "fallback_used": False,
         "horizon_executed": 0,
         "done_reached": False,
+        "done_step": None,
         "final_reward": None,
         "final_done": None,
         "final_eef_pos": None,
         "final_eef_quat": None,
         "rewards": [],
         "dones": [],
+        "eef_pos_traj": [],
+        "eef_quat_traj": [],
+        "action_delta_l2_traj": [],
+        "executed_actions": [],
         "frames": [],
+        "_sim_state_traj": [],
         "errors": [],
     }
 
@@ -128,28 +186,47 @@ def rollout_from_state(
         return result
 
     for k in range(horizon):
-        if k == 0 and first_action_override is not None:
-            action = first_action_override
+        base_action = actions[timestep + k].copy()
+
+        if actual_delta is not None and k < perturb_steps:
+            action = apply_delta_to_action(base_action, actual_delta, clip_action)
         else:
-            action = actions[timestep + k]
+            action = base_action
+
+        effective_delta = action - base_action
 
         obs, reward, done, info = env.step(action.tolist())
 
         result["frames"].append(get_libero_image(obs))
         result["rewards"].append(float(reward) if reward is not None else None)
         result["dones"].append(bool(done))
+        result["action_delta_l2_traj"].append(float(np.linalg.norm(effective_delta)))
+        result["executed_actions"].append(np.array(action, dtype=np.float32).tolist())
         result["horizon_executed"] += 1
 
         if "robot0_eef_pos" in obs:
-            result["final_eef_pos"] = np.array(obs["robot0_eef_pos"], dtype=np.float32).tolist()
+            eef_pos = np.array(obs["robot0_eef_pos"], dtype=np.float32)
+            result["final_eef_pos"] = eef_pos.tolist()
+            result["eef_pos_traj"].append(eef_pos.tolist())
+        else:
+            result["eef_pos_traj"].append(None)
+
         if "robot0_eef_quat" in obs:
-            result["final_eef_quat"] = np.array(obs["robot0_eef_quat"], dtype=np.float32).tolist()
+            eef_quat = np.array(obs["robot0_eef_quat"], dtype=np.float32)
+            result["final_eef_quat"] = eef_quat.tolist()
+            result["eef_quat_traj"].append(eef_quat.tolist())
+        else:
+            result["eef_quat_traj"].append(None)
+
+        sim_state = get_sim_state_flat(env)
+        result["_sim_state_traj"].append(sim_state.tolist() if sim_state is not None else None)
 
         result["final_reward"] = float(reward) if reward is not None else None
         result["final_done"] = bool(done)
 
         if done:
             result["done_reached"] = True
+            result["done_step"] = k + 1
             break
 
     return result
@@ -184,6 +261,58 @@ def save_rollout_mp4_or_frames(
             writer.close()
 
 
+def compute_l2_traj(
+    traj_a: List[Optional[List[float]]],
+    traj_b: List[Optional[List[float]]],
+) -> List[Optional[float]]:
+    """Compute per-step L2 distance between two vector trajectories."""
+    n = min(len(traj_a), len(traj_b))
+    out: List[Optional[float]] = []
+
+    for i in range(n):
+        a = traj_a[i]
+        b = traj_b[i]
+        if a is None or b is None:
+            out.append(None)
+            continue
+
+        a_np = np.array(a, dtype=np.float32)
+        b_np = np.array(b, dtype=np.float32)
+
+        if a_np.shape != b_np.shape:
+            out.append(None)
+            continue
+
+        out.append(float(np.linalg.norm(a_np - b_np)))
+
+    return out
+
+
+def summarize_l2_traj(values: List[Optional[float]]) -> Dict[str, Optional[float]]:
+    valid = [v for v in values if v is not None]
+
+    if not valid:
+        return {
+            "mean": None,
+            "max": None,
+            "final": None,
+        }
+
+    return {
+        "mean": float(np.mean(valid)),
+        "max": float(np.max(valid)),
+        "final": float(valid[-1]),
+    }
+
+
+def remove_internal_fields(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove fields that should not be written to summary.json."""
+    result = dict(result)
+    result.pop("frames", None)
+    result.pop("_sim_state_traj", None)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
 
@@ -201,6 +330,10 @@ def main() -> None:
     parser.add_argument("--env_img_res", type=int, default=256)
     parser.add_argument("--delta", type=str, default="0,0,0,0,0,0,0")
     parser.add_argument("--delta_scale", type=float, default=1.0)
+
+    # Continuous perturbation length. For LIBERO OpenVLA-OFT, 8 is a natural
+    # value because NUM_ACTIONS_CHUNK = 8.
+    parser.add_argument("--perturb_steps", type=int, default=1)
 
     # IMPORTANT:
     # Do not use type=bool here. In argparse, bool("False") is True.
@@ -222,15 +355,18 @@ def main() -> None:
         "timestep": args.timestep,
         "horizon_requested": args.horizon,
         "horizon_used": None,
+        "perturb_steps_requested": args.perturb_steps,
+        "perturb_steps_used": None,
         "hdf5_path": None,
         "state_shape": None,
         "action_shape": None,
-        "clean_action": None,
+        "clean_action_at_t": None,
         "delta": None,
         "delta_scale": args.delta_scale,
         "actual_delta": None,
-        "perturbed_action": None,
-        "action_l2_delta": None,
+        "perturbed_action_at_t": None,
+        "requested_delta_l2": None,
+        "effective_first_action_delta_l2": None,
         "zero_gripper_delta": args.zero_gripper_delta,
         "clip_action": args.clip_action,
         "clean": {},
@@ -240,6 +376,9 @@ def main() -> None:
     }
 
     try:
+        if args.perturb_steps < 0:
+            raise ValueError(f"perturb_steps must be >= 0, got {args.perturb_steps}")
+
         benchmark_dict = benchmark.get_benchmark_dict()
         task_suite = benchmark_dict[args.libero_task_suite]()
         task = task_suite.get_task(args.task_id)
@@ -267,10 +406,13 @@ def main() -> None:
             raise ValueError(f"Invalid timestep {args.timestep} for actions length {len(actions)}")
 
         horizon = min(args.horizon, len(actions) - args.timestep)
+        perturb_steps_used = min(args.perturb_steps, horizon)
+
         summary["horizon_used"] = horizon
+        summary["perturb_steps_used"] = perturb_steps_used
 
         state_t = states[args.timestep]
-        clean_first_action = actions[args.timestep].copy()
+        clean_action_at_t = actions[args.timestep].copy()
 
         delta = parse_delta(args.delta)
         if args.zero_gripper_delta:
@@ -278,15 +420,18 @@ def main() -> None:
 
         actual_delta = args.delta_scale * delta
 
-        perturbed_first_action = clean_first_action.copy() + actual_delta
-        if args.clip_action:
-            perturbed_first_action[:6] = np.clip(perturbed_first_action[:6], -1.0, 1.0)
+        perturbed_action_at_t = apply_delta_to_action(
+            clean_action_at_t,
+            actual_delta,
+            clip_action=args.clip_action,
+        )
 
-        summary["clean_action"] = clean_first_action.tolist()
+        summary["clean_action_at_t"] = clean_action_at_t.tolist()
         summary["delta"] = delta.tolist()
         summary["actual_delta"] = actual_delta.tolist()
-        summary["perturbed_action"] = perturbed_first_action.tolist()
-        summary["action_l2_delta"] = float(np.linalg.norm(perturbed_first_action - clean_first_action))
+        summary["perturbed_action_at_t"] = perturbed_action_at_t.tolist()
+        summary["requested_delta_l2"] = float(np.linalg.norm(actual_delta))
+        summary["effective_first_action_delta_l2"] = float(np.linalg.norm(perturbed_action_at_t - clean_action_at_t))
 
         clean_result = rollout_from_state(
             env,
@@ -294,7 +439,9 @@ def main() -> None:
             actions,
             args.timestep,
             horizon,
-            first_action_override=None,
+            actual_delta=None,
+            perturb_steps=0,
+            clip_action=args.clip_action,
         )
 
         perturbed_result = rollout_from_state(
@@ -303,7 +450,9 @@ def main() -> None:
             actions,
             args.timestep,
             horizon,
-            first_action_override=perturbed_first_action,
+            actual_delta=actual_delta,
+            perturb_steps=perturb_steps_used,
+            clip_action=args.clip_action,
         )
 
         clean_video_path, clean_is_mp4 = save_rollout_mp4_or_frames(
@@ -322,46 +471,64 @@ def main() -> None:
         perturbed_result["video_path"] = perturbed_video_path
         perturbed_result["video_is_mp4"] = perturbed_is_mp4
 
-        # Do not write raw frames into JSON.
-        clean_result.pop("frames", None)
-        perturbed_result.pop("frames", None)
-
-        summary["clean"] = clean_result
-        summary["perturbed"] = perturbed_result
-
         clean_success = bool(clean_result.get("done_reached") or clean_result.get("final_reward") == 1.0)
         perturbed_success = bool(perturbed_result.get("done_reached") or perturbed_result.get("final_reward") == 1.0)
         success_changed = clean_success != perturbed_success
 
-        final_eef_pos_l2 = None
-        if clean_result.get("final_eef_pos") is not None and perturbed_result.get("final_eef_pos") is not None:
-            clean_pos = np.array(clean_result["final_eef_pos"], dtype=np.float32)
-            perturbed_pos = np.array(perturbed_result["final_eef_pos"], dtype=np.float32)
-            final_eef_pos_l2 = float(np.linalg.norm(clean_pos - perturbed_pos))
+        eef_pos_l2_traj = compute_l2_traj(
+            clean_result.get("eef_pos_traj", []),
+            perturbed_result.get("eef_pos_traj", []),
+        )
+        eef_quat_l2_traj = compute_l2_traj(
+            clean_result.get("eef_quat_traj", []),
+            perturbed_result.get("eef_quat_traj", []),
+        )
+        sim_state_l2_traj = compute_l2_traj(
+            clean_result.get("_sim_state_traj", []),
+            perturbed_result.get("_sim_state_traj", []),
+        )
+
+        eef_pos_summary = summarize_l2_traj(eef_pos_l2_traj)
+        eef_quat_summary = summarize_l2_traj(eef_quat_l2_traj)
+        sim_state_summary = summarize_l2_traj(sim_state_l2_traj)
 
         horizon_executed_diff = None
         if clean_result.get("horizon_executed") is not None and perturbed_result.get("horizon_executed") is not None:
             horizon_executed_diff = int(perturbed_result["horizon_executed"] - clean_result["horizon_executed"])
 
+        done_step_diff = None
+        if clean_result.get("done_step") is not None and perturbed_result.get("done_step") is not None:
+            done_step_diff = int(perturbed_result["done_step"] - clean_result["done_step"])
+
+        summary["clean"] = remove_internal_fields(clean_result)
+        summary["perturbed"] = remove_internal_fields(perturbed_result)
+
         summary["comparison"] = {
             "clean_success": clean_success,
             "perturbed_success": perturbed_success,
             "success_changed": success_changed,
-            "final_eef_pos_l2": final_eef_pos_l2,
             "horizon_executed_diff": horizon_executed_diff,
+            "done_step_clean": clean_result.get("done_step"),
+            "done_step_perturbed": perturbed_result.get("done_step"),
+            "done_step_diff": done_step_diff,
+            "eef_pos_l2_traj": eef_pos_l2_traj,
+            "eef_pos_l2_mean": eef_pos_summary["mean"],
+            "eef_pos_l2_max": eef_pos_summary["max"],
+            "eef_pos_l2_final": eef_pos_summary["final"],
+            "eef_quat_l2_traj": eef_quat_l2_traj,
+            "eef_quat_l2_mean": eef_quat_summary["mean"],
+            "eef_quat_l2_max": eef_quat_summary["max"],
+            "eef_quat_l2_final": eef_quat_summary["final"],
+            "sim_state_l2_traj": sim_state_l2_traj,
+            "sim_state_l2_mean": sim_state_summary["mean"],
+            "sim_state_l2_max": sim_state_summary["max"],
+            "sim_state_l2_final": sim_state_summary["final"],
         }
 
         summary_path = os.path.join(args.output_dir, "summary.json")
         _write_json(summary_path, summary)
 
-        _print_summary(
-            summary,
-            summary_path,
-            clean_success,
-            perturbed_success,
-            success_changed,
-            final_eef_pos_l2,
-        )
+        _print_summary(summary, summary_path)
 
     except Exception as exc:
         summary["errors"].append(str(exc))
@@ -370,36 +537,33 @@ def main() -> None:
         summary_path = os.path.join(args.output_dir, "summary.json")
         _write_json(summary_path, summary)
 
-        _print_summary(
-            summary,
-            summary_path,
-            clean_success=None,
-            perturbed_success=None,
-            success_changed=None,
-            final_eef_pos_l2=None,
-        )
+        _print_summary(summary, summary_path)
 
 
-def _print_summary(
-    summary: Dict[str, Any],
-    summary_path: str,
-    clean_success: Optional[bool],
-    perturbed_success: Optional[bool],
-    success_changed: Optional[bool],
-    final_eef_pos_l2: Optional[float],
-) -> None:
+def _print_summary(summary: Dict[str, Any], summary_path: str) -> None:
+    comparison = summary.get("comparison", {})
+
     print("=== Action Delta Rollout Probe Summary ===")
     print(f"task: {summary.get('task_name')} (id {summary.get('task_id')})")
     print(f"demo_id: {summary.get('demo_id')}")
     print(f"timestep: {summary.get('timestep')}")
+    print(f"horizon_used: {summary.get('horizon_used')}")
+    print(f"perturb_steps_used: {summary.get('perturb_steps_used')}")
     print(f"delta: {summary.get('delta')}")
     print(f"actual_delta: {summary.get('actual_delta')}")
-    print(f"clean_success: {clean_success}")
-    print(f"perturbed_success: {perturbed_success}")
-    print(f"success_changed: {success_changed}")
+    print(f"requested_delta_l2: {summary.get('requested_delta_l2')}")
+    print(f"effective_first_action_delta_l2: {summary.get('effective_first_action_delta_l2')}")
+    print(f"clean_success: {comparison.get('clean_success')}")
+    print(f"perturbed_success: {comparison.get('perturbed_success')}")
+    print(f"success_changed: {comparison.get('success_changed')}")
     print(f"clean_horizon_executed: {summary.get('clean', {}).get('horizon_executed')}")
     print(f"perturbed_horizon_executed: {summary.get('perturbed', {}).get('horizon_executed')}")
-    print(f"final_eef_pos_l2: {final_eef_pos_l2}")
+    print(f"done_step_clean: {comparison.get('done_step_clean')}")
+    print(f"done_step_perturbed: {comparison.get('done_step_perturbed')}")
+    print(f"eef_pos_l2_final: {comparison.get('eef_pos_l2_final')}")
+    print(f"eef_pos_l2_max: {comparison.get('eef_pos_l2_max')}")
+    print(f"sim_state_l2_final: {comparison.get('sim_state_l2_final')}")
+    print(f"sim_state_l2_max: {comparison.get('sim_state_l2_max')}")
     print(f"summary_path: {summary_path}")
 
 
