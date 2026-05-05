@@ -34,7 +34,6 @@ if str(REPO_ROOT) not in sys.path:
 from experiments.robot.libero.libero_utils import (  # noqa: E402
     get_libero_env,
     get_libero_image,
-    get_libero_wrist_image,
 )
 
 
@@ -47,6 +46,23 @@ def _write_json(path: str, payload: Dict[str, Any]) -> None:
         json.dump(payload, f, indent=2)
 
 
+def str2bool(v):
+    """Robust argparse boolean parser.
+
+    This avoids the argparse pitfall where bool("False") evaluates to True.
+    """
+    if isinstance(v, bool):
+        return v
+
+    v = v.lower()
+    if v in ("yes", "true", "t", "1", "y"):
+        return True
+    if v in ("no", "false", "f", "0", "n"):
+        return False
+
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
 def parse_delta(delta_str: str) -> np.ndarray:
     parts = [p.strip() for p in delta_str.split(",") if p.strip() != ""]
     values = [float(p) for p in parts]
@@ -57,6 +73,7 @@ def parse_delta(delta_str: str) -> np.ndarray:
 
 def restore_env(env, state_t: np.ndarray) -> Tuple[Optional[dict], bool, bool, List[str]]:
     errors: List[str] = []
+
     try:
         env.reset()
     except Exception as exc:
@@ -117,6 +134,7 @@ def rollout_from_state(
             action = actions[timestep + k]
 
         obs, reward, done, info = env.step(action.tolist())
+
         result["frames"].append(get_libero_image(obs))
         result["rewards"].append(float(reward) if reward is not None else None)
         result["dones"].append(bool(done))
@@ -148,6 +166,7 @@ def save_rollout_mp4_or_frames(
 
     mp4_path = os.path.join(output_dir, f"{name}.mp4")
     writer = None
+
     try:
         writer = imageio.get_writer(mp4_path, fps=fps)
         for frame in frames:
@@ -167,6 +186,7 @@ def save_rollout_mp4_or_frames(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+
     parser.add_argument(
         "--libero_task_suite",
         type=str,
@@ -181,9 +201,14 @@ def main() -> None:
     parser.add_argument("--env_img_res", type=int, default=256)
     parser.add_argument("--delta", type=str, default="0,0,0,0,0,0,0")
     parser.add_argument("--delta_scale", type=float, default=1.0)
-    parser.add_argument("--zero_gripper_delta", type=bool, default=True)
-    parser.add_argument("--clip_action", type=bool, default=False)
+
+    # IMPORTANT:
+    # Do not use type=bool here. In argparse, bool("False") is True.
+    parser.add_argument("--zero_gripper_delta", type=str2bool, default=True)
+    parser.add_argument("--clip_action", type=str2bool, default=False)
+
     parser.add_argument("--output_dir", type=str, default="./scsro/debug_delta_rollout")
+
     args = parser.parse_args()
 
     _ensure_dir(args.output_dir)
@@ -218,6 +243,7 @@ def main() -> None:
         benchmark_dict = benchmark.get_benchmark_dict()
         task_suite = benchmark_dict[args.libero_task_suite]()
         task = task_suite.get_task(args.task_id)
+
         summary["task_name"] = task.name
         summary["task_description"] = task.language
 
@@ -225,6 +251,7 @@ def main() -> None:
 
         hdf5_path = os.path.join(args.libero_hdf5_dir, f"{task.name}_demo.hdf5")
         summary["hdf5_path"] = hdf5_path
+
         if not os.path.exists(hdf5_path):
             raise FileNotFoundError(f"HDF5 not found: {hdf5_path}")
 
@@ -232,8 +259,9 @@ def main() -> None:
             demo = h5_file["data"][f"demo_{args.demo_id}"]
             states = demo["states"][()]
             actions = demo["actions"][()]
-            summary["state_shape"] = list(states.shape)
-            summary["action_shape"] = list(actions.shape)
+
+        summary["state_shape"] = list(states.shape)
+        summary["action_shape"] = list(actions.shape)
 
         if args.timestep < 0 or args.timestep >= len(actions):
             raise ValueError(f"Invalid timestep {args.timestep} for actions length {len(actions)}")
@@ -247,6 +275,7 @@ def main() -> None:
         delta = parse_delta(args.delta)
         if args.zero_gripper_delta:
             delta[-1] = 0.0
+
         actual_delta = args.delta_scale * delta
 
         perturbed_first_action = clean_first_action.copy() + actual_delta
@@ -267,6 +296,7 @@ def main() -> None:
             horizon,
             first_action_override=None,
         )
+
         perturbed_result = rollout_from_state(
             env,
             state_t,
@@ -292,6 +322,7 @@ def main() -> None:
         perturbed_result["video_path"] = perturbed_video_path
         perturbed_result["video_is_mp4"] = perturbed_is_mp4
 
+        # Do not write raw frames into JSON.
         clean_result.pop("frames", None)
         perturbed_result.pop("frames", None)
 
@@ -335,9 +366,18 @@ def main() -> None:
     except Exception as exc:
         summary["errors"].append(str(exc))
         summary["errors"].append(traceback.format_exc())
+
         summary_path = os.path.join(args.output_dir, "summary.json")
         _write_json(summary_path, summary)
-        _print_summary(summary, summary_path, None, None, None, None)
+
+        _print_summary(
+            summary,
+            summary_path,
+            clean_success=None,
+            perturbed_success=None,
+            success_changed=None,
+            final_eef_pos_l2=None,
+        )
 
 
 def _print_summary(
