@@ -1,0 +1,130 @@
+{
+  "libero_task_suite": "libero_spatial",
+  "task_id": 0,
+  "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate",
+  "task_description": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+  "demo_id": 0,
+  "hdf5_path": "/storage/v-xiangxizheng/zy_workspace/SNRO/datasets/libero_hdf5_no_noops/libero_spatial_no_noops/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_demo.hdf5",
+  "episode_len": 98,
+  "timesteps": [
+    60
+  ],
+  "horizon": 80,
+  "num_steps_wait": 10,
+  "perturb_steps": 8,
+  "delta_dims": [
+    1
+  ],
+  "delta_magnitudes": [
+    0.8
+  ],
+  "include_negative": true,
+  "num_delta_candidates": 2,
+  "num_rows": 2,
+  "best_by_timestep": {
+    "60": {
+      "delta": [
+        0.0,
+        0.800000011920929,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "score": 121.52771843075752,
+      "success_changed": true,
+      "clean_success": true,
+      "perturbed_success": false,
+      "clean_done_step": 18,
+      "perturbed_done_step": null
+    }
+  },
+  "global_best": {
+    "timestep": 60,
+    "delta": [
+      0.0,
+      0.800000011920929,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "score": 121.52771843075752,
+    "success_changed": true,
+    "clean_success": true,
+    "perturbed_success": false,
+    "clean_done_step": 18,
+    "perturbed_done_step": null
+  },
+  "rows": [
+    {
+      "timestep": 60,
+      "delta": [
+        0.0,
+        0.800000011920929,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "delta_dim": 1,
+      "delta_magnitude": 0.8,
+      "delta_sign": 1,
+      "perturb_steps": 8,
+      "clean_success": true,
+      "clean_done_step": 18,
+      "perturbed_success": false,
+      "perturbed_done_step": null,
+      "success_changed": true,
+      "done_step_delay": 20,
+      "eef_pos_l2_final": 0.08441372215747833,
+      "eef_pos_l2_max": 0.08441372215747833,
+      "sim_state_l2_final": 2.057561159133911,
+      "sim_state_l2_max": 6.835812091827393,
+      "score": 121.52771843075752,
+      "score_terms": {
+        "failure_flag": 1,
+        "done_step_delay": 20,
+        "eef_pos_l2_max": 0.08441372215747833,
+        "sim_state_l2_max": 6.835812091827393
+      }
+    },
+    {
+      "timestep": 60,
+      "delta": [
+        0.0,
+        -0.800000011920929,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "delta_dim": 1,
+      "delta_magnitude": 0.8,
+      "delta_sign": -1,
+      "perturb_steps": 8,
+      "clean_success": true,
+      "clean_done_step": 18,
+      "perturbed_success": false,
+      "perturbed_done_step": null,
+      "success_changed": true,
+      "done_step_delay": 20,
+      "eef_pos_l2_final": 0.08585464209318161,
+      "eef_pos_l2_max": 0.08585464209318161,
+      "sim_state_l2_final": 3.720470905303955,
+      "sim_state_l2_max": 5.719535827636719,
+      "score": 121.43050000369549,
+      "score_terms": {
+        "failure_flag": 1,
+        "done_step_delay": 20,
+        "eef_pos_l2_max": 0.08585464209318161,
+        "sim_state_l2_max": 5.719535827636719
+      }
+    }
+  ],
+  "errors": []
+}

@@ -1,0 +1,3 @@
+timestep,delta_dim,delta_magnitude,delta_sign,clean_success,clean_done_step,perturbed_success,perturbed_done_step,success_changed,done_step_delay,eef_pos_l2_final,eef_pos_l2_max,sim_state_l2_final,sim_state_l2_max,score
+60,1,0.8,1,True,18,False,,True,20,0.08441372215747833,0.08441372215747833,2.057561159133911,6.835812091827393,121.52771843075752
+60,1,0.8,-1,True,18,False,,True,20,0.08585464209318161,0.08585464209318161,3.720470905303955,5.719535827636719,121.43050000369549
